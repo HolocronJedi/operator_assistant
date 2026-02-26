@@ -1,4 +1,4 @@
-# operator_assistant
+# terminal-copilot
 
 A lightweight process triage tool that ingests Linux or Windows process lists and categorizes each process as:
 
