@@ -1,0 +1,63 @@
+{
+  "safe_windows_names": [
+    "csrss.exe", "wininit.exe", "winlogon.exe", "lsass.exe", "services.exe",
+    "svchost.exe", "explorer.exe", "dwm.exe", "smss.exe", "spoolsv.exe"
+  ],
+  "safe_linux_names": [
+    "systemd", "sshd", "cron", "dbus-daemon", "NetworkManager", "rsyslogd"
+  ],
+  "safe_windows_paths_prefix": [
+    "C:\\Windows\\System32\\",
+    "C:\\Windows\\SysWOW64\\",
+    "C:\\Windows\\explorer.exe"
+  ],
+  "installed_app_paths_prefix": [
+    "C:\\Program Files\\",
+    "C:\\Program Files (x86)\\",
+    "/usr/bin/",
+    "/usr/sbin/",
+    "/opt/"
+  ],
+  "suspicious_path_substrings": [
+    "\\AppData\\Local\\Temp\\",
+    "\\AppData\\Roaming\\",
+    "\\Downloads\\",
+    "C:\\Users\\Public\\",
+    "/tmp/",
+    "/var/tmp/",
+    "/dev/shm/"
+  ],
+  "lolbin_windows": [
+    "powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe",
+    "rundll32.exe", "regsvr32.exe", "mshta.exe", "wmic.exe", "certutil.exe",
+    "bitsadmin.exe", "installutil.exe", "schtasks.exe"
+  ],
+  "suspicious_cmdline_patterns": [
+    "-enc",
+    "frombase64string",
+    "iex",
+    "invoke-expression",
+    "downloadstring",
+    "curl | sh",
+    "wget | sh",
+    "/dev/tcp/"
+  ],
+  "network_suspicious_ports": [ 4444, 1337, 31337, 6667 ],
+  "weights": {
+    "suspicious_path": 30,
+    "unsigned_in_systemish": 25,
+    "lolbin": 20,
+    "suspicious_cmdline": 30,
+    "external_connection": 15,
+    "listening_uncommon": 15,
+    "known_bad_hash": 100,
+    "known_safe_baseline": -25,
+    "installed_app_hint": -10,
+    "valid_signature": -20
+  },
+  "thresholds": {
+    "safe_max": 14,
+    "installed_max": 34,
+    "possibly_malicious_max": 69
+  }
+}
