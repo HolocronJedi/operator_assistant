@@ -29,6 +29,9 @@ FLAG = {
 }
 
 RESET = "\033[0m"
+PREFIX_WIDTH = max(len(v) for v in FLAG.values())
+
+
 def _category_by_pid() -> dict[int, str]:
     out: dict[int, str] = {}
     for p in _iter_processes():
@@ -39,7 +42,7 @@ def _category_by_pid() -> dict[int, str]:
 def _format_prefix(category: str) -> str:
     category = category if category in FLAG else "unknown"
     colour = COLOUR.get(category, "")
-    flag = FLAG[category]
+    flag = FLAG[category].ljust(PREFIX_WIDTH)
     if not colour:
         return flag
     return f"{colour}{flag}{RESET}"
@@ -72,7 +75,7 @@ def _annotate_lines(raw: str) -> list[str]:
             continue
 
         if header_idx is not None and idx == header_idx:
-            out_lines.append(f"CATEGORY {line}")
+            out_lines.append(f"{'CATEGORY'.ljust(PREFIX_WIDTH)} {line}")
             continue
 
         pid = None

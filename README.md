@@ -37,6 +37,10 @@ Inside the wrapped shell, `ps` is wrapped so process rows are prefixed with
 categories (`safe`, `installed_app`, `potentially_malicious`, `malicious`,
 or `unknown`) and unknown/suspicious rows are grouped at the bottom.
 
+Inside the wrapped shell, `ss` and `netstat` are also wrapped so connection
+rows are prefixed with the same categories, with listening/suspicious-port
+rows highlighted.
+
 Insights are shown as:
 
 - **Desktop notifications** (if `notify-send` is available).

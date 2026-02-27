@@ -161,6 +161,63 @@ def _ensure_bashrc_tc_ps() -> None:
         return
 
 
+def _ensure_bashrc_tc_network() -> None:
+    """
+    Ensure ~/.bashrc contains TC_CONTEXT-aware ss/netstat wrappers.
+    The wrappers preserve normal output while adding category prefixes.
+    """
+    bashrc = os.path.expanduser("~/.bashrc")
+    snippet_tag = "# terminal-copilot network integration"
+    snippet = (
+        snippet_tag
+        + "\n"
+        + 'if [[ -n "$TC_CONTEXT" ]]; then\n'
+        + "  ss() {\n"
+        + '    local _tc_out _tc_status _tc_py="${TC_PYTHON_BIN:-python3}"\n'
+        + '    _tc_out="$(command ss "$@")"\n'
+        + "    _tc_status=$?\n"
+        + "    if [[ $_tc_status -ne 0 ]]; then\n"
+        + '      [[ -n "$_tc_out" ]] && printf "%s\\n" "$_tc_out"\n'
+        + "      return $_tc_status\n"
+        + "    fi\n"
+        + '    if [[ -z "$TC_HOME" ]]; then\n'
+        + '      printf "%s\\n" "$_tc_out"\n'
+        + "      return 0\n"
+        + "    fi\n"
+        + '    printf "%s\\n" "$_tc_out" | PYTHONPATH="$TC_HOME${PYTHONPATH:+:$PYTHONPATH}" "$_tc_py" -m terminal_copilot.wrapper.net_annotate --source ss\n'
+        + "  }\n"
+        + "  netstat() {\n"
+        + '    local _tc_out _tc_status _tc_py="${TC_PYTHON_BIN:-python3}"\n'
+        + '    _tc_out="$(command netstat \"$@\")"\n'
+        + "    _tc_status=$?\n"
+        + "    if [[ $_tc_status -ne 0 ]]; then\n"
+        + '      [[ -n "$_tc_out" ]] && printf "%s\\n" "$_tc_out"\n'
+        + "      return $_tc_status\n"
+        + "    fi\n"
+        + '    if [[ -z "$TC_HOME" ]]; then\n'
+        + '      printf "%s\\n" "$_tc_out"\n'
+        + "      return 0\n"
+        + "    fi\n"
+        + '    printf "%s\\n" "$_tc_out" | PYTHONPATH="$TC_HOME${PYTHONPATH:+:$PYTHONPATH}" "$_tc_py" -m terminal_copilot.wrapper.net_annotate --source netstat\n'
+        + "  }\n"
+        + "fi\n"
+    )
+    try:
+        try:
+            with open(bashrc, "r", encoding="utf-8") as f:
+                content = f.read()
+        except FileNotFoundError:
+            content = ""
+        if snippet_tag in content:
+            return
+        with open(bashrc, "a", encoding="utf-8") as f:
+            if content and not content.endswith("\n"):
+                f.write("\n")
+            f.write("\n" + snippet + "\n")
+    except OSError:
+        return
+
+
 def run_wrapped_shell(
     *,
     shell: str | None = None,
@@ -181,6 +238,7 @@ def run_wrapped_shell(
     _ensure_bashrc_tc_prompt()
     _ensure_bashrc_tc_help()
     _ensure_bashrc_tc_ps()
+    _ensure_bashrc_tc_network()
     buf_out = RingBuffer(max_lines=output_line_limit, max_bytes=output_tail_bytes)
     buf_in: list[str] = []
     last_insight_check = 0.0
