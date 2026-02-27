@@ -33,6 +33,10 @@ python3 -m terminal_copilot --shell /bin/zsh --debounce 1.0
 Inside the wrapped shell, type `help` to print the terminal-copilot module menu
 (built-in insight modules plus discovered custom scripts/modules).
 
+Inside the wrapped shell, `ps` is wrapped so process rows are prefixed with
+categories (`safe`, `installed_app`, `potentially_malicious`, `malicious`,
+or `unknown`) and unknown/suspicious rows are grouped at the bottom.
+
 Insights are shown as:
 
 - **Desktop notifications** (if `notify-send` is available).

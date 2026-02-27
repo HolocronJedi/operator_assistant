@@ -4,7 +4,12 @@
     "svchost.exe", "explorer.exe", "dwm.exe", "smss.exe", "spoolsv.exe"
   ],
   "safe_linux_names": [
-    "systemd", "sshd", "cron", "dbus-daemon", "NetworkManager", "rsyslogd"
+    "systemd", "kthreadd", "rcu_gp", "rcu_par_gp", "migration", "ksoftirqd", "kworker",
+    "watchdog", "cpuhp", "kdevtmpfs", "kthread", "kcompactd", "kswapd", "khugepaged",
+    "jbd2", "ext4-rsv-conver", "systemd-journald", "systemd-udevd", "systemd-logind",
+    "dbus-daemon", "NetworkManager", "rsyslogd", "cron", "crond", "sshd", "agetty",
+    "login", "bash", "zsh", "sh", "sudo", "init", "launchd", "kernel_task",
+    "notifyd", "logd", "opendirectoryd", "runningboardd", "distnoted", "cfprefsd"
   ],
   "safe_windows_paths_prefix": [
     "C:\\Windows\\System32\\",
@@ -14,9 +19,19 @@
   "installed_app_paths_prefix": [
     "C:\\Program Files\\",
     "C:\\Program Files (x86)\\",
+    "/bin/",
+    "/sbin/",
     "/usr/bin/",
     "/usr/sbin/",
+    "/usr/lib/",
+    "/usr/libexec/",
+    "/System/",
+    "/Library/",
     "/opt/"
+  ],
+  "safe_cmdline_patterns": [
+    "^\\[[^\\]]+\\]$",
+    "^\\[[^\\]]+\\/\\d+\\]$"
   ],
   "suspicious_path_substrings": [
     "\\AppData\\Local\\Temp\\",

@@ -118,6 +118,49 @@ def _ensure_bashrc_tc_help() -> None:
         return
 
 
+def _ensure_bashrc_tc_ps() -> None:
+    """
+    Ensure ~/.bashrc contains a TC_CONTEXT-aware ps wrapper.
+    The wrapper preserves normal ps output while adding category prefixes.
+    """
+    bashrc = os.path.expanduser("~/.bashrc")
+    snippet_tag = "# terminal-copilot ps integration"
+    snippet = (
+        snippet_tag
+        + "\n"
+        + 'if [[ -n "$TC_CONTEXT" ]]; then\n'
+        + "  ps() {\n"
+        + '    local _tc_out _tc_status _tc_py="${TC_PYTHON_BIN:-python3}"\n'
+        + '    _tc_out="$(command ps "$@")"\n'
+        + "    _tc_status=$?\n"
+        + "    if [[ $_tc_status -ne 0 ]]; then\n"
+        + '      [[ -n "$_tc_out" ]] && printf "%s\\n" "$_tc_out"\n'
+        + "      return $_tc_status\n"
+        + "    fi\n"
+        + '    if [[ -z "$TC_HOME" ]]; then\n'
+        + '      printf "%s\\n" "$_tc_out"\n'
+        + "      return 0\n"
+        + "    fi\n"
+        + '    printf "%s\\n" "$_tc_out" | PYTHONPATH="$TC_HOME${PYTHONPATH:+:$PYTHONPATH}" "$_tc_py" -m terminal_copilot.wrapper.ps_annotate\n'
+        + "  }\n"
+        + "fi\n"
+    )
+    try:
+        try:
+            with open(bashrc, "r", encoding="utf-8") as f:
+                content = f.read()
+        except FileNotFoundError:
+            content = ""
+        if snippet_tag in content:
+            return
+        with open(bashrc, "a", encoding="utf-8") as f:
+            if content and not content.endswith("\n"):
+                f.write("\n")
+            f.write("\n" + snippet + "\n")
+    except OSError:
+        return
+
+
 def run_wrapped_shell(
     *,
     shell: str | None = None,
@@ -137,6 +180,7 @@ def run_wrapped_shell(
     # snippet so we can show [tc] in the inner shell prompt automatically.
     _ensure_bashrc_tc_prompt()
     _ensure_bashrc_tc_help()
+    _ensure_bashrc_tc_ps()
     buf_out = RingBuffer(max_lines=output_line_limit, max_bytes=output_tail_bytes)
     buf_in: list[str] = []
     last_insight_check = 0.0
@@ -153,12 +197,17 @@ def run_wrapped_shell(
         nonlocal last_insight_check
         if not on_context:
             return
+        ctx = make_context()
+        last_cmd = (ctx.last_command() or "").strip()
+        ps_tokens = set(last_cmd.replace("|", " ").split())
+        is_ps_flow = "ps" in ps_tokens
         now = time.monotonic()
-        if now - last_insight_check < debounce_seconds:
+        # For ps output classification, run checks eagerly so short-lived
+        # command output is not skipped by debounce timing.
+        if (not is_ps_flow) and (now - last_insight_check < debounce_seconds):
             return
         last_insight_check = now
         try:
-            ctx = make_context()
             insights = on_context(ctx)
             for insight in insights or []:
                 from .insights import notify_insight
@@ -217,8 +266,14 @@ def run_wrapped_shell(
     # can adjust the prompt (PS1) accordingly.
     orig_tc = os.environ.get("TC_CONTEXT")
     orig_help = os.environ.get("TC_HELP_MENU")
+    orig_home = os.environ.get("TC_HOME")
+    orig_ps_wrapped = os.environ.get("TC_PS_WRAPPED")
+    orig_py = os.environ.get("TC_PYTHON_BIN")
     os.environ["TC_CONTEXT"] = "1"
     os.environ["TC_HELP_MENU"] = render_help_menu()
+    os.environ["TC_HOME"] = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    os.environ["TC_PS_WRAPPED"] = "1"
+    os.environ["TC_PYTHON_BIN"] = sys.executable or "python3"
 
     # Optional one-time header so it's obvious when you enter the wrapped shell.
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or "?"
@@ -243,6 +298,18 @@ def run_wrapped_shell(
             os.environ.pop("TC_HELP_MENU", None)
         else:
             os.environ["TC_HELP_MENU"] = orig_help
+        if orig_home is None:
+            os.environ.pop("TC_HOME", None)
+        else:
+            os.environ["TC_HOME"] = orig_home
+        if orig_ps_wrapped is None:
+            os.environ.pop("TC_PS_WRAPPED", None)
+        else:
+            os.environ["TC_PS_WRAPPED"] = orig_ps_wrapped
+        if orig_py is None:
+            os.environ.pop("TC_PYTHON_BIN", None)
+        else:
+            os.environ["TC_PYTHON_BIN"] = orig_py
 
     # pty.spawn returns wait status from os.waitpid; convert to exit code.
     try:

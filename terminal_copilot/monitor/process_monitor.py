@@ -7,7 +7,7 @@ On each check:
 - Classifies processes into:
   - safe (green)
   - installed_app (blue)
-  - possibly_malicious (yellow)
+  - potentially_malicious (yellow)
   - malicious (red)
 - Returns only *new* non-green processes since the last check so the user
   isn't spammed every time.
@@ -27,7 +27,7 @@ class ProcInfo:
     user: str
     name: str
     cmdline: str
-    category: str  # safe | installed_app | possibly_malicious | malicious
+    category: str  # unknown | safe | installed_app | potentially_malicious | malicious
     reason: str
 
 
@@ -80,6 +80,10 @@ def _iter_processes() -> Iterable[ProcInfo]:
         re.compile(p, re.I)
         for p in rules.get("malicious_cmdline_patterns", [])
     ]
+    safe_cmd_patterns = [
+        re.compile(p, re.I)
+        for p in rules.get("safe_cmdline_patterns", [])
+    ]
 
     for line in out.splitlines():
         line = line.strip()
@@ -95,13 +99,16 @@ def _iter_processes() -> Iterable[ProcInfo]:
         except ValueError:
             continue
 
-        category = "safe"
+        category = "unknown"
         reasons: list[str] = []
         name_l = name.lower()
 
         if name_l in safe_names:
             category = "safe"
             reasons.append("known safe process name")
+        elif any(p.search(name) or p.search(cmdline) for p in safe_cmd_patterns):
+            category = "safe"
+            reasons.append("safe cmdline pattern")
         else:
             # Installed applications: rough heuristic based on path prefixes.
             for pref in installed_prefixes:
@@ -120,8 +127,8 @@ def _iter_processes() -> Iterable[ProcInfo]:
                 # Suspicious command line patterns bump category.
                 for pat in suspicious_cmd_patterns:
                     if pat.search(cmdline):
-                        if category in ("safe", "installed_app"):
-                            category = "possibly_malicious"
+                        if category in ("unknown", "safe", "installed_app"):
+                            category = "potentially_malicious"
                         reasons.append(f"cmdline pattern: {pat.pattern}")
                         break
 
@@ -199,6 +206,9 @@ def classify_ps_output(text: str) -> list[ProcInfo]:
     malicious_cmd_patterns = [
         re.compile(p, re.I) for p in rules.get("malicious_cmdline_patterns", [])
     ]
+    safe_cmd_patterns = [
+        re.compile(p, re.I) for p in rules.get("safe_cmdline_patterns", [])
+    ]
 
     lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
     if not lines:
@@ -247,13 +257,16 @@ def classify_ps_output(text: str) -> list[ProcInfo]:
         cmdline = " ".join(parts[cmd_start_idx:]) if cmd_start_idx < len(parts) else ""
         name = cmdline.split()[0] if cmdline else parts[pid_idx]
 
-        category = "safe"
+        category = "unknown"
         reasons: list[str] = []
         name_l = name.lower()
 
         if name_l in safe_names:
             category = "safe"
             reasons.append("known safe process name")
+        elif any(p.search(name) or p.search(cmdline) for p in safe_cmd_patterns):
+            category = "safe"
+            reasons.append("safe cmdline pattern")
         else:
             for pref in installed_prefixes:
                 if pref and cmdline.startswith(pref):
@@ -270,8 +283,8 @@ def classify_ps_output(text: str) -> list[ProcInfo]:
             else:
                 for pat in suspicious_cmd_patterns:
                     if pat.search(cmdline):
-                        if category in ("safe", "installed_app"):
-                            category = "possibly_malicious"
+                        if category in ("unknown", "safe", "installed_app"):
+                            category = "potentially_malicious"
                         reasons.append(f"cmdline pattern: {pat.pattern}")
                         break
 
@@ -291,7 +304,7 @@ def classify_ps_output(text: str) -> list[ProcInfo]:
 
 def scan_processes_and_connections() -> list[ProcInfo]:
     """
-    Scan processes+network, classify, and return only *new* non-safe entries
+    Scan processes+network, classify, and return only *new* non-safe/non-unknown entries
     since the last call.
     """
     suspicious_conns = _iter_suspicious_connections()
@@ -304,8 +317,8 @@ def scan_processes_and_connections() -> list[ProcInfo]:
         conn_reasons = suspicious_conns.get(p.pid, [])
         if conn_reasons:
             reasons.extend(conn_reasons)
-            if p.category in ("safe", "installed_app"):
-                p.category = "possibly_malicious"
+            if p.category in ("unknown", "safe", "installed_app"):
+                p.category = "potentially_malicious"
         if not reasons and p.category == "safe":
             continue
         # Escalate category if we have both suspicious cmd and ports.
@@ -313,7 +326,7 @@ def scan_processes_and_connections() -> list[ProcInfo]:
             p.category = "malicious"
 
         p.reason = "; ".join(r for r in reasons if r)
-        if p.category == "safe":
+        if p.category in ("safe", "unknown"):
             continue
 
         key = f"{p.pid}:{p.category}:{p.reason}"
@@ -323,4 +336,3 @@ def scan_processes_and_connections() -> list[ProcInfo]:
         results.append(p)
 
     return results
-

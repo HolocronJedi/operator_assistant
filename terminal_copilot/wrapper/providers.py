@@ -106,6 +106,9 @@ def rule_based_insights(ctx: TerminalContext) -> list[Insight]:
     tokens = re.split(r"[|\s]+", last_cmd)
     if "ps" not in tokens:
         return insights
+    if os.environ.get("TC_PS_WRAPPED") == "1":
+        # ps output is already rewritten inline by shell wrapper integration.
+        return insights
 
     ps_snapshot = _extract_ps_block(ctx)
     if not ps_snapshot:
@@ -126,9 +129,10 @@ def rule_based_insights(ctx: TerminalContext) -> list[Insight]:
         if lp:
             # Prefer the more severe category between ps-based and live.
             order = {
+                "unknown": 0,
                 "safe": 0,
                 "installed_app": 1,
-                "possibly_malicious": 2,
+                "potentially_malicious": 2,
                 "malicious": 3,
             }
             if order.get(lp.category, 0) > order.get(category, 0):
@@ -149,82 +153,41 @@ def rule_based_insights(ctx: TerminalContext) -> list[Insight]:
             }
         )
 
-    # Build annotated process list with flags on the left, plus a grouped
-    # summary of only the malicious categories at the bottom.
-    lines: list[str] = []
+    # Build annotated process list with flags on the left.
     cat_to_colour = {
-        "safe": "\033[32m",                # green
-        "installed_app": "\033[34m",       # blue
-        "possibly_malicious": "\033[33m",  # yellow
-        "malicious": "\033[31m",           # red
+        "safe": "\033[32m",                 # green
+        "installed_app": "\033[34m",        # blue
+        "potentially_malicious": "\033[33m",  # yellow
+        "malicious": "\033[31m",            # red
+        "unknown": "",
     }
-    reset = "\033[0m"
-
-    groups = {
-        "safe": [],
-        "installed_app": [],
-        "possibly_malicious": [],
-        "malicious": [],
-    }
-    for info in merged:
-        cat = info["category"]
-        if cat not in groups:
-            continue
-        # Only show safe entries that are explicitly known-good (have a reason),
-        # otherwise the summary would be flooded.
-        if cat == "safe" and not info.get("reason"):
-            continue
-        groups[cat].append(info)
-
-    if not any(groups.values()):
-        # Nothing noteworthy; keep quiet.
-        return insights
-
-    # Annotated process list: one line per process, with a category flag
-    # on the far left so it visually aligns with ps-like output.
     flag_for_cat = {
         "safe": "[safe]",
         "installed_app": "[installed_app]",
-        "possibly_malicious": "[malicious_leaning]",
+        "potentially_malicious": "[potentially_malicious]",
         "malicious": "[malicious]",
+        "unknown": "[unknown]",
     }
-    for cat, items in groups.items():
-        for info in items:
-            colour = cat_to_colour[cat]
-            flag = flag_for_cat[cat]
-            line = (
-                f"{colour}{flag}{reset} "
-                f"{info['user']} {info['pid']} {info['cmdline']}"
-            )
-            lines.append(line)
+    reset = "\033[0m"
+    lines: list[str] = []
+    for info in merged:
+        cat = info.get("category") or "unknown"
+        colour = cat_to_colour.get(cat, "")
+        flag = flag_for_cat.get(cat, "[unknown]")
+        if colour:
+            prefix = f"{colour}{flag}{reset}"
+        else:
+            prefix = flag
+        lines.append(f"{prefix} {info['user']} {info['pid']} {info['cmdline']}")
 
-    # Grouped summary only for the malicious categories for quick review.
-    summary_lines: list[str] = []
-    for cat in ("possibly_malicious", "malicious"):
-        items = groups[cat]
-        if not items:
-            continue
-        colour = cat_to_colour[cat]
-        label = "Potentially malicious" if cat == "possibly_malicious" else "Malicious-leaning"
-        summary_lines.append(f"{colour}{label}:{reset}")
-        for info in items:
-            summary_lines.append(
-                f"  PID {info['pid']} ({info['name']}) user={info['user']}\n"
-                f"     cmdline: {info['cmdline']}\n"
-                f"     reason: {info['reason'] or 'heuristic match'}"
-            )
-        summary_lines.append("")
+    body = "\n".join(lines).rstrip()
 
-    body_parts = ["\n".join(lines).rstrip()]
-    if summary_lines:
-        body_parts.append("\n".join(summary_lines).rstrip())
-    body = "\n\n".join(p for p in body_parts if p)
-
-    # Overall level is based on the worst malicious category present.
+    # Overall level is based on the worst category present.
     level = "info"
-    if groups["malicious"]:
+    categories_present = {info.get("category") or "unknown" for info in merged}
+    if "malicious" in categories_present:
         level = "danger"
-    elif groups["possibly_malicious"]:
+    elif "potentially_malicious" in categories_present:
         level = "warning"
 
     insights.append(
