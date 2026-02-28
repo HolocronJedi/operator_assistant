@@ -1,76 +1,124 @@
 # terminal-copilot
 
-Two modes:
+## Quick Start
 
-1. **Terminal wrapper** – A PTY passthrough that runs your shell, monitors commands and output, and pushes context to rule-based and optional AI insight providers. You get real-time notifications (e.g. suspicious patterns, suggested remediation commands).
-2. **Process triage** – Batch analysis of process lists (see below).
+1. Start terminal-copilot:
+```bash
+python3 -m terminal_copilot --no-ai
+```
+2. Type `help` in the wrapped shell to see available commands.
+3. (Optional) Run commands from a local file:
+```bash
+tc runfile /tmp/cmds.txt
+```
+4. Confirm each command when prompted:
+   - `y` = run
+   - `N` (or Enter) = skip
+   - `x` = stop batch and return to prompt
 
----
+That is enough to start using it immediately.
 
-## Terminal wrapper (monitor + AI insights)
+## Overview
 
-Run your shell inside a wrapper that watches what you type and what the shell outputs, then surfaces insights (suspicious commands, possible vulnerabilities, suggested fixes).
+`terminal-copilot` runs your shell inside a PTY wrapper and adds live context-aware insights.
+It can:
 
-### Requirements
+- Monitor typed commands and shell output.
+- Surface rule-based and optional AI insights.
+- Wrap `ps`, `ss`, and `netstat` output with quick risk categories.
+- Execute newline-separated command batches from a local file with `tc runfile`.
 
-- Linux (or macOS) with a real TTY (PTY). Not suitable for environments where `openpty()` is unavailable (e.g. some CI/sandboxes).
-- Optional: `notify-send` for desktop notifications.
-- Optional: `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for AI-backed insights.
+The wrapped shell works in local and SSH workflows. For `tc runfile`, the file is read locally and only command text is sent to the active terminal session.
 
-### Usage
+## Example Usage
 
 ```bash
-# Rule-based insights only (no API key)
+# Start wrapper with rule-based insights only
 python3 -m terminal_copilot --no-ai
 
-# With AI insights (set OPENAI_API_KEY or ANTHROPIC_API_KEY)
+# Start wrapper with AI insights (set OPENAI_API_KEY or ANTHROPIC_API_KEY)
 python3 -m terminal_copilot
 
-# Custom shell and debounce
+# Start wrapper with custom shell and slower insight checks
 python3 -m terminal_copilot --shell /bin/zsh --debounce 1.0
 ```
 
-Inside the wrapped shell, type `help` to print the terminal-copilot module menu
-(built-in insight modules plus discovered custom scripts/modules).
+Inside the wrapped shell:
 
-Inside the wrapped shell, `ps` is wrapped so process rows are prefixed with
-categories (`safe`, `installed_app`, `potentially_malicious`, `malicious`,
-or `unknown`) and unknown/suspicious rows are grouped at the bottom.
+```bash
+# Show tc help menu
+help
 
-Inside the wrapped shell, `ss` and `netstat` are also wrapped so connection
-rows are prefixed with the same categories, with listening/suspicious-port
-rows highlighted.
+# Run a batch from local file (newline-separated commands)
+tc runfile
+tc runfile /tmp/cmds.txt
+```
 
-Inside the wrapped shell, `tc runfile` lets you execute a newline-separated
-command list from a **local** text file:
+Command file format:
 
-- `tc runfile` prompts for a local path.
-- `tc runfile /path/to/commands.txt` runs immediately.
-- Each command is shown before execution with confirmation:
-  - `y` / `yes`: run command
-  - `n`, empty input, or anything else: skip command (default No)
-  - `x` / `exit`: stop remaining commands and return to normal prompt
+```text
+id
+ps -ef
+netstat -natu
+arp -a
+```
 
-The file is read by terminal-copilot on your local machine and each command is
-then sent to the active shell context. If you are currently inside SSH, those
-commands execute in that remote session, but the file itself is never uploaded.
+Notes:
 
-Insights are shown as:
+- Blank lines are ignored.
+- Lines beginning with `#` are treated as comments.
+- Runfile confirmation options: `y` / `yes`, `N` (default skip), `x` / `exit`.
 
-- **Desktop notifications** (if `notify-send` is available).
-- **Stderr banners** in the terminal: `[tc]` with level (info/warning/danger), title, body, and optional suggested commands.
+## Help Menu
 
-### How it works
+### CLI options
 
-- Spawns your `$SHELL` (or `sh`) in a pseudo-terminal and forwards all input and output (full passthrough).
-- Buffers recent input lines (commands) and output; periodically calls an **insight provider** with this context.
-- **Rule-based provider** uses `collector/detectors/rules.json` (suspicious command-line patterns, LOLBins) and requires no API.
-- **AI provider** (optional) sends a short excerpt of the last command and recent output to OpenAI or Anthropic and parses structured insights (malicious behavior, vulnerabilities, suggested commands). Enable by setting the corresponding API key.
+```text
+python3 -m terminal_copilot [--no-ai] [--shell SHELL] [--debounce SECONDS]
+```
 
-### Configuration
+- `--no-ai`: Disable AI-backed insights and use rule-based checks only.
+- `--shell`: Override shell path (default: `$SHELL`, fallback `sh`).
+- `--debounce`: Seconds between insight checks (default `0.8`).
+
+### In-shell commands
+
+- `help`: Print terminal-copilot help menu.
+- `tc runfile`: Prompt for local command file path and load commands.
+- `tc runfile <path>`: Load commands from provided local path.
+- `tc runlist`: Alias for `tc runfile`.
+- `ps`, `ss`, `netstat`: Wrapped output with category prefixes.
+
+### Help output (example)
+
+```text
+[tc] terminal-copilot help
+
+Built-in modules:
+  - combined_insights: Rule-based + optional AI insights
+  - rule_based_insights: Local process/rule heuristic insights
+  - ai_insights: AI-backed insights (when API keys are set)
+
+Custom modules/scripts:
+  - none found
+
+Discovery locations:
+  - $TC_MODULE_PATHS (os.pathsep-separated)
+  - ./modules, ./scripts
+
+Batch command execution:
+  - tc runfile
+    Prompts for a local file path, then executes newline-separated commands
+    in the current shell context (including active SSH/remote sessions).
+  - tc runfile /path/to/commands.txt
+    Same behavior with inline path.
+  - Confirmation per command: [y]es / [N]o (default skip) / [x] exit
+```
+
+## Configuration
 
 | Env / flag | Description |
-|------------|-------------|
+|---|---|
 | `SHELL` | Shell to run (default `sh` if unset). |
 | `--no-ai` | Disable AI; use only rule-based insights. |
 | `--debounce` | Seconds between insight checks (default `0.8`). |
@@ -78,75 +126,22 @@ Insights are shown as:
 | `ANTHROPIC_API_KEY` | Enable Anthropic-based insights. |
 | `TC_OPENAI_MODEL` | OpenAI model (default `gpt-4o-mini`). |
 | `TC_ANTHROPIC_MODEL` | Anthropic model (default `claude-3-5-haiku-20241022`). |
-| `TC_MODULE_PATHS` | Optional additional module/script directories (separated by `:` on Unix). |
+| `TC_MODULE_PATHS` | Additional module/script directories (`:`-separated on Unix). |
 
----
+## Troubleshooting
 
-## Process triage (batch)
-
-A lightweight process triage tool that ingests Linux or Windows process lists and categorizes each process as:
-
-- **safe** (green)
-- **application** / tied to installed software (blue)
-- **potentially unsafe** (yellow)
-- **unsafe** (red)
-
-This supports quick operator review and can be extended with AI or database-backed lookups.
-
-## Features
-
-- Parses Linux process output (for example `ps -eo pid,comm,args`).
-- Parses Windows process output from either:
-  - `tasklist /fo csv /nh` (recommended)
-  - standard `tasklist` text table
-- Classifies using:
-  - known-safe process names
-  - known installed-application process names
-  - known-unsafe process names
-  - built-in suspicious command-line heuristics
-- Uses ANSI colors for category display.
-
-## Usage
-
-```bash
-python process_analyzer.py \
-  --platform linux \
-  --input ./samples/linux_ps.txt \
-  --safe-list ./samples/safe.json \
-  --application-list ./samples/apps.json \
-  --unsafe-list ./samples/unsafe.json
-```
-
-### Input list files
-
-Each list file is JSON array of process names.
-
-`safe.json`
-```json
-["systemd", "sshd", "explorer.exe"]
-```
-
-`apps.json`
-```json
-["chrome.exe", "teams.exe", "slack"]
-```
-
-`unsafe.json`
-```json
-["evil.exe", "coinminer"]
-```
-
-## AI or database integration
-
-`classify_processes(...)` accepts an optional `ai_classifier` callback. You can plug in:
-
-- an LLM risk classifier,
-- a malware intelligence database query,
-- an internal allow/deny service.
-
-The callback can return one of the categories to override unknown processes.
-
-## Development
-
-- **Wrapper**: Implement a custom insight provider by passing a callable `on_context(ctx) -> list[Insight]` to `run_wrapped_shell(on_context=...)`. `ctx` has `last_command()`, `recent_output()`, `output_lines`, `input_lines`.
-- **Process triage**: Run tests with `pytest` (when present).
+- `mcp` or `tc` command not found:
+  - `mcp` is not part of this project CLI.
+  - Start with `python3 -m terminal_copilot` and use commands inside that wrapped shell.
+- `Object "runfile" is unknown, try "tc help"`:
+  - You are hitting the system `tc` command instead of terminal-copilot interception.
+  - Ensure you are inside the `[tc]` wrapped shell and type `tc runfile` there.
+- `tc runfile` cannot read file:
+  - Verify the local file exists and path is correct (`ls -l /path/to/file`).
+  - Use absolute paths when possible.
+- Output formatting looks off:
+  - Restart terminal-copilot.
+  - Avoid pasting large multiline input directly into confirmation prompts.
+- No AI insights appear:
+  - Expected with `--no-ai`.
+  - Without `--no-ai`, set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
