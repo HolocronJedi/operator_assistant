@@ -22,7 +22,7 @@ def main() -> int:
     ap.add_argument(
         "--shell",
         default=None,
-        help="Shell to run (default: $SHELL or sh).",
+        help="Shell to run (default: Unix=$SHELL/sh, Windows=powershell.exe/cmd.exe).",
     )
     ap.add_argument(
         "--debounce",
@@ -30,12 +30,27 @@ def main() -> int:
         default=0.8,
         help="Seconds between insight checks (default: 0.8).",
     )
+    ap.add_argument(
+        "--record-session",
+        action="store_true",
+        help="Enable opt-in NDJSON transcript logging for this wrapped shell session.",
+    )
+    ap.add_argument(
+        "--session-log",
+        default=None,
+        help=(
+            "Optional path for session log output (used with --record-session). "
+            "Default: ~/.terminal-copilot/sessions/session-<timestamp>-<id>.ndjson"
+        ),
+    )
     args = ap.parse_args()
     on_context = rule_based_insights if args.no_ai else combined_insights
     return run_wrapped_shell(
         shell=args.shell or None,
         on_context=on_context,
         debounce_seconds=args.debounce,
+        record_session=args.record_session,
+        session_log_path=args.session_log,
     )
 
 

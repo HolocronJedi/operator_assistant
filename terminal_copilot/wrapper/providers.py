@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .insights import Insight
 from .pty_runner import TerminalContext
+from .net_annotate import annotate_network_output
 from .tasklist_annotate import annotate_windows_process_output
 from ..monitor.process_monitor import (
     scan_processes_and_connections,
@@ -34,6 +35,8 @@ def _load_rules() -> dict:
 _suspicious_cmdline_patterns: list[re.Pattern] | None = None
 _last_windows_proc_digest: str | None = None
 _last_windows_proc_input_len: int = -1
+_last_network_digest: str | None = None
+_last_network_input_len: int = -1
 
 
 def _get_suspicious_patterns() -> list[re.Pattern]:
@@ -264,12 +267,66 @@ def _extract_windows_process_block_for_last_cmd(
         if (
             stripped.startswith("*Evil-WinRM*")
             and ">" in stripped
-        ) or stripped.endswith("$"):
+        ) or stripped.endswith("$") or stripped.endswith(">"):
             complete = True
             break
         if (
             stripped.startswith("[tc]")
             or stripped.startswith("[safe]")
+            or stripped.startswith("[unknown]")
+            or stripped.startswith("[potentially_malicious]")
+            or stripped.startswith("[malicious]")
+        ):
+            continue
+        block.append(line)
+
+    return "\n".join(block), complete
+
+
+def _extract_command_block_for_last_cmd(
+    ctx: TerminalContext, last_cmd: str
+) -> tuple[str, bool]:
+    """
+    Extract output block for the most recent command echo in local/remote shells.
+    Returns (block, complete).
+    """
+    lines = ctx.output_lines
+    if not lines or not last_cmd:
+        return "", False
+
+    cmd_l = last_cmd.strip().lower()
+    anchor = None
+    for i in range(len(lines) - 1, -1, -1):
+        low = lines[i].lower().rstrip()
+        if cmd_l in low and (
+            "*evil-winrm*" in low
+            or low.endswith("> " + cmd_l)
+            or low.endswith("$ " + cmd_l)
+            or low.endswith("# " + cmd_l)
+        ):
+            anchor = i
+            break
+    if anchor is None:
+        return "", False
+
+    block: list[str] = []
+    complete = False
+    for line in lines[anchor + 1 :]:
+        stripped = line.strip()
+        if not stripped:
+            if block:
+                break
+            continue
+        if (
+            (stripped.startswith("*Evil-WinRM*") and ">" in stripped)
+            or stripped.endswith("$")
+            or stripped.endswith(">")
+            or stripped.startswith("[tc]")
+        ):
+            complete = True
+            break
+        if (
+            stripped.startswith("[safe]")
             or stripped.startswith("[unknown]")
             or stripped.startswith("[potentially_malicious]")
             or stripped.startswith("[malicious]")
@@ -336,6 +393,7 @@ def rule_based_insights(ctx: TerminalContext) -> list[Insight]:
         or ("wmic" in tokens and "process" in tokens)
         or ("ps" in tokens and _is_windows_remote_session(ctx))
     )
+    is_net_cmd = "netstat" in tokens or "ss" in tokens
 
     if is_windows_proc_cmd:
         global _last_windows_proc_input_len
@@ -363,6 +421,37 @@ def rule_based_insights(ctx: TerminalContext) -> list[Insight]:
             Insight(
                 level=level,
                 title="Windows process classification",
+                body=body,
+                commands=[],
+            )
+        )
+        return insights
+
+    if is_net_cmd:
+        if os.environ.get("TC_NET_WRAPPED") == "1":
+            # netstat/ss output already rewritten inline by shell wrapper.
+            return insights
+        global _last_network_input_len
+        if len(ctx.input_lines) == _last_network_input_len:
+            return insights
+        net_snapshot, complete = _extract_command_block_for_last_cmd(ctx, last_cmd)
+        if not complete:
+            return insights
+        if not net_snapshot:
+            return insights
+        global _last_network_digest
+        digest = hashlib.sha256(net_snapshot.encode("utf-8", errors="replace")).hexdigest()
+        if digest == _last_network_digest:
+            return insights
+        _last_network_digest = digest
+        _last_network_input_len = len(ctx.input_lines)
+        body = annotate_network_output(net_snapshot).rstrip()
+        if not body:
+            return insights
+        insights.append(
+            Insight(
+                level="info",
+                title="Network connection classification",
                 body=body,
                 commands=[],
             )

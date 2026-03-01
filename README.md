@@ -27,7 +27,9 @@ It can:
 - Surface rule-based and optional AI insights.
 - Wrap `ps`, `ss`, and `netstat` output with quick risk categories.
 - Classify Windows `tasklist` output even in remote sessions (for example `evil-winrm`, SSH).
+- Detect host OS (`linux`, `windows`, `macos`) for cross-platform behavior.
 - Execute newline-separated command batches from a local file with `tc runfile`.
+- Optionally record full session transcripts as NDJSON for later analysis.
 
 The wrapped shell works in local and SSH workflows. For `tc runfile`, the file is read locally and only command text is sent to the active terminal session.
 
@@ -42,6 +44,16 @@ python3 -m terminal_copilot
 
 # Start wrapper with custom shell and slower insight checks
 python3 -m terminal_copilot --shell /bin/zsh --debounce 1.0
+
+# Opt-in session recording (default output under ~/.terminal-copilot/sessions)
+python3 -m terminal_copilot --record-session
+
+# Opt-in session recording to a custom path
+python3 -m terminal_copilot --record-session --session-log /tmp/tc-session.ndjson
+
+# Windows examples
+python -m terminal_copilot --shell powershell.exe
+python -m terminal_copilot --shell cmd.exe
 ```
 
 Inside the wrapped shell:
@@ -75,12 +87,14 @@ Notes:
 ### CLI options
 
 ```text
-python3 -m terminal_copilot [--no-ai] [--shell SHELL] [--debounce SECONDS]
+python3 -m terminal_copilot [--no-ai] [--shell SHELL] [--debounce SECONDS] [--record-session] [--session-log PATH]
 ```
 
 - `--no-ai`: Disable AI-backed insights and use rule-based checks only.
-- `--shell`: Override shell path (default: `$SHELL`, fallback `sh`).
+- `--shell`: Override shell path (default: Unix=`$SHELL`/`sh`, Windows=`powershell.exe` then `cmd.exe`).
 - `--debounce`: Seconds between insight checks (default `0.8`).
+- `--record-session`: Opt-in transcript logging for the current wrapped-shell session.
+- `--session-log`: Custom transcript path (use with `--record-session`).
 
 ### In-shell commands
 
@@ -88,9 +102,13 @@ python3 -m terminal_copilot [--no-ai] [--shell SHELL] [--debounce SECONDS]
 - `tc runfile`: Prompt for local command file path and load commands.
 - `tc runfile <path>`: Load commands from provided local path.
 - `tc runlist`: Alias for `tc runfile`.
+- `tc session start [path]`: Start NDJSON transcript logging from inside the wrapped shell.
+- `tc session stop`: Stop transcript logging for the current shell session.
+- `tc session path`: Print active transcript path.
 - `ps`, `ss`, `netstat`: Wrapped output with category prefixes.
 - `tasklist`, `Get-Process`, `wmic process ...`: Classified from captured output
   (including remote Windows sessions such as `evil-winrm`/SSH).
+- `netstat`: Classified from captured output on Linux/macOS/Windows.
 
 ### Help output (example)
 
@@ -116,6 +134,19 @@ Batch command execution:
   - tc runfile /path/to/commands.txt
     Same behavior with inline path.
   - Confirmation per command: [y]es / [N]o (default skip) / [x] exit
+
+Session controls inside wrapped shell:
+  - tc session start [path]
+    Start transcript logging without restarting terminal-copilot.
+  - tc session stop
+    Stop transcript logging for this shell.
+  - tc session path
+    Print active transcript path.
+
+Session recording (opt-in):
+  - Start wrapper with --record-session to persist this session as NDJSON.
+  - Optional --session-log /path/to/file.ndjson to choose output path.
+  - Default path: ~/.terminal-copilot/sessions/
 ```
 
 ## Configuration
@@ -125,6 +156,8 @@ Batch command execution:
 | `SHELL` | Shell to run (default `sh` if unset). |
 | `--no-ai` | Disable AI; use only rule-based insights. |
 | `--debounce` | Seconds between insight checks (default `0.8`). |
+| `--record-session` | Opt-in NDJSON transcript logging for the current session. |
+| `--session-log` | Custom transcript path (used with `--record-session`). |
 | `OPENAI_API_KEY` | Enable OpenAI-based insights. |
 | `ANTHROPIC_API_KEY` | Enable Anthropic-based insights. |
 | `TC_OPENAI_MODEL` | OpenAI model (default `gpt-4o-mini`). |
@@ -151,3 +184,9 @@ Batch command execution:
 - `[tc]` prompt/header seems missing inside `evil-winrm` or SSH-to-Windows:
   - Remote interactive clients render their own prompt, so local bash prompt markers are not shown there.
   - tc monitoring still runs, and `tasklist` classification now comes from captured output context.
+- Need inline rewritten remote output for selected commands:
+  - On Windows host shells, active remote sessions can rewrite
+    `tasklist`/`Get-Process`/`wmic process` and `ss`/`netstat` output locally
+    before display using tc middleware.
+  - On Unix PTY shells, tc keeps raw terminal passthrough and applies
+    context-based classification without rewriting raw PTY bytes.

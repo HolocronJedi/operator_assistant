@@ -46,7 +46,10 @@ def notify_insight(insight: Insight) -> None:
     prefix = {"info": "\033[36m[tc]\033[0m", "warning": "\033[33m[tc]\033[0m", "danger": "\033[31m[tc]\033[0m"}.get(
         insight.level, "\033[36m[tc]\033[0m"
     )
-    if insight.title == "Windows process classification" and insight.body:
+    if insight.title in {
+        "Windows process classification",
+        "Network connection classification",
+    } and insight.body:
         # Render categorized rows directly for better terminal readability.
         sys.stderr.write("\r\n" + insight.body.rstrip() + "\r\n")
         sys.stderr.flush()

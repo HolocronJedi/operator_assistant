@@ -5,19 +5,29 @@ and captures commands + output for insight providers (e.g. AI or rule-based).
 from __future__ import annotations
 
 import os
-import pty
+import platform
 import shutil
+import subprocess
 import sys
+import ctypes
 from dataclasses import dataclass, field
 from typing import Callable
+
+try:
+    import pty
+except ImportError:
+    pty = None
 
 from .command_batch import (
     encode_commands,
     load_commands_from_file,
     parse_batch_invocation,
 )
+from .command_control import parse_session_invocation
 from .help_menu import render_help_menu
+from .output_middleware import OutputPipeline, RemoteCommandRewriteMiddleware
 from .ring_buffer import RingBuffer
+from .session_log import SessionRecorder
 
 
 @dataclass
@@ -40,9 +50,119 @@ class TerminalContext:
 
 
 def _find_shell() -> str:
+    if os.name == "nt":
+        detected_parent = _detect_windows_parent_shell()
+        candidates = [
+            os.environ.get("TC_WINDOWS_SHELL", "").strip(),
+            detected_parent,
+            os.environ.get("SHELL", "").strip(),
+            os.environ.get("COMSPEC", "").strip(),
+            "powershell.exe",
+            "pwsh.exe",
+            "cmd.exe",
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = shutil.which(candidate)
+            if path:
+                return path
+            if os.path.exists(candidate):
+                return candidate
+        return "cmd.exe"
+
     shell = os.environ.get("SHELL", "sh")
     path = shutil.which(shell)
     return path or shell
+
+
+def _detect_windows_parent_shell() -> str:
+    """Best-effort detection of parent shell executable on Windows."""
+    if os.name != "nt":
+        return ""
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.c_ulong),
+            ("cntUsage", ctypes.c_ulong),
+            ("th32ProcessID", ctypes.c_ulong),
+            ("th32DefaultHeapID", ctypes.c_void_p),
+            ("th32ModuleID", ctypes.c_ulong),
+            ("cntThreads", ctypes.c_ulong),
+            ("th32ParentProcessID", ctypes.c_ulong),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", ctypes.c_ulong),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    kernel32 = ctypes.windll.kernel32
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot == INVALID_HANDLE_VALUE:
+        return ""
+
+    try:
+        proc_map: dict[int, tuple[int, str]] = {}
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        ok = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            pid = int(entry.th32ProcessID)
+            ppid = int(entry.th32ParentProcessID)
+            exe = (entry.szExeFile or "").strip().lower()
+            proc_map[pid] = (ppid, exe)
+            ok = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+
+        pid = os.getpid()
+        visited: set[int] = set()
+        while pid and pid not in visited:
+            visited.add(pid)
+            parent = proc_map.get(pid)
+            if not parent:
+                break
+            ppid, exe = parent
+            if exe in {"cmd.exe", "powershell.exe", "pwsh.exe"}:
+                return exe
+            pid = ppid
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+    return ""
+
+
+def _windows_shell_argv(shell: str) -> list[str]:
+    """Build shell argv with minimal tc context initialization."""
+    name = os.path.basename(shell).lower()
+    if "powershell" in name or name in ("pwsh.exe", "pwsh"):
+        script = (
+            'function global:prompt { "[tc] PS $($executionContext.SessionState.Path.CurrentLocation)> " }; '
+            'function global:help { '
+            'param([Parameter(ValueFromRemainingArguments=$true)][string[]]$tcArgs); '
+            'if ($tcArgs.Count -eq 0) { if ($env:TC_HELP_MENU) { $env:TC_HELP_MENU -split "`n" | ForEach-Object { $_ } }; return }; '
+            'Microsoft.PowerShell.Core\\Get-Help @tcArgs '
+            '}'
+        )
+        return [shell, "-NoLogo", "-NoExit", "-Command", script]
+    if name in ("cmd.exe", "cmd"):
+        cmd_init = (
+            "prompt [tc] $P$G"
+            " & doskey help=python -m terminal_copilot.wrapper.print_help_menu"
+        )
+        return [shell, "/Q", "/K", cmd_init]
+    return [shell]
+
+
+def _host_os_name() -> str:
+    name = platform.system().lower()
+    if "windows" in name:
+        return "windows"
+    if "darwin" in name:
+        return "macos"
+    if "linux" in name:
+        return "linux"
+    return name or "unknown"
 
 
 def _is_help_command(data: bytes) -> bool:
@@ -245,6 +365,71 @@ def _ensure_bashrc_tc_network() -> None:
         return
 
 
+def _run_wrapped_shell_windows(
+    *,
+    shell: str,
+    on_context: Callable[[TerminalContext], list] | None,
+    output_line_limit: int,
+    output_tail_bytes: int,
+    debounce_seconds: float,
+    recorder: SessionRecorder | None,
+    pipeline: OutputPipeline | None,
+) -> int:
+    """Simple Windows fallback: spawn shell attached to current console."""
+    _ = on_context
+    _ = output_line_limit
+    _ = output_tail_bytes
+    _ = debounce_seconds
+    _ = pipeline
+
+    if recorder:
+        recorder.record_note(
+            "Windows basic mode active: transcript captures metadata only; raw shell I/O is not piped through tc."
+        )
+
+    orig_env = {
+        "TC_CONTEXT": os.environ.get("TC_CONTEXT"),
+        "TC_HELP_MENU": os.environ.get("TC_HELP_MENU"),
+        "TC_HOME": os.environ.get("TC_HOME"),
+        "TC_PS_WRAPPED": os.environ.get("TC_PS_WRAPPED"),
+        "TC_NET_WRAPPED": os.environ.get("TC_NET_WRAPPED"),
+        "TC_PYTHON_BIN": os.environ.get("TC_PYTHON_BIN"),
+        "TC_HOST_OS": os.environ.get("TC_HOST_OS"),
+    }
+    os.environ["TC_CONTEXT"] = "1"
+    os.environ["TC_HELP_MENU"] = render_help_menu()
+    os.environ["TC_HOME"] = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    os.environ["TC_PS_WRAPPED"] = "0"
+    os.environ["TC_NET_WRAPPED"] = "0"
+    os.environ["TC_PYTHON_BIN"] = sys.executable or "python"
+    os.environ["TC_HOST_OS"] = _host_os_name()
+
+    _print_tc_message(
+        f"Dropping into terminal-copilot shell ({_host_os_name()} via {os.path.basename(shell)})..."
+    )
+
+    try:
+        argv = _windows_shell_argv(shell)
+        proc = subprocess.Popen(
+            argv,
+            env=os.environ.copy(),
+        )
+    except OSError as e:
+        print(f"terminal-copilot: failed to start shell '{shell}': {e}", file=sys.stderr)
+        return 127
+
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        for key, value in orig_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def run_wrapped_shell(
     *,
     shell: str | None = None,
@@ -252,6 +437,8 @@ def run_wrapped_shell(
     output_line_limit: int = 100,
     output_tail_bytes: int = 4096,
     debounce_seconds: float = 0.5,
+    record_session: bool = False,
+    session_log_path: str | None = None,
 ) -> int:
     """
     Run an interactive shell in a PTY with full passthrough. Optionally call
@@ -259,6 +446,35 @@ def run_wrapped_shell(
     are surfaced (e.g. notifications). Returns shell exit code.
     """
     shell = shell or _find_shell()
+    recorder: SessionRecorder | None = None
+    if record_session:
+        recorder = SessionRecorder(
+            host_os=_host_os_name(),
+            shell=shell,
+            file_path=session_log_path,
+        )
+        try:
+            log_path = recorder.open()
+            _print_tc_message(f"Session logging enabled: {log_path}")
+        except OSError as e:
+            _print_tc_message(f"Unable to start session logging: {e}")
+            recorder = None
+
+    pipeline = OutputPipeline(middlewares=[RemoteCommandRewriteMiddleware()])
+
+    if os.name == "nt" or pty is None:
+        code = _run_wrapped_shell_windows(
+            shell=shell,
+            on_context=on_context,
+            output_line_limit=output_line_limit,
+            output_tail_bytes=output_tail_bytes,
+            debounce_seconds=debounce_seconds,
+            recorder=recorder,
+            pipeline=pipeline,
+        )
+        if recorder:
+            recorder.close(exit_code=code)
+        return code
 
     # Best-effort: make sure the user's bashrc has a TC_CONTEXT-aware prompt
     # snippet so we can show [tc] in the inner shell prompt automatically.
@@ -288,6 +504,34 @@ def run_wrapped_shell(
             "\r\n[tc] Run it? [y]es / [N]o / [x] exit: "
         )
         sys.stderr.flush()
+
+    def _start_session_recording(path_text: str | None = None) -> None:
+        nonlocal recorder
+        if recorder:
+            _print_tc_message(f"Session logging already enabled: {recorder.file_path}")
+            return
+        rec = SessionRecorder(
+            host_os=_host_os_name(),
+            shell=shell,
+            file_path=path_text,
+        )
+        try:
+            path = rec.open()
+        except OSError as e:
+            _print_tc_message(f"Unable to start session logging: {e}")
+            return
+        recorder = rec
+        _print_tc_message(f"Session logging enabled: {path}")
+
+    def _stop_session_recording() -> None:
+        nonlocal recorder
+        if not recorder:
+            _print_tc_message("Session logging is not active.")
+            return
+        path = recorder.file_path
+        recorder.close(exit_code=None)
+        recorder = None
+        _print_tc_message(f"Session logging stopped: {path}")
 
     def make_context() -> TerminalContext:
         return TerminalContext(
@@ -335,6 +579,12 @@ def run_wrapped_shell(
         if not data:
             return b""
 
+        if recorder:
+            try:
+                recorder.record_output(data.decode("utf-8", errors="replace"))
+            except Exception:
+                pass
+
         # Buffer output for context
         buf_out.append_bytes(data)
         try:
@@ -346,6 +596,8 @@ def run_wrapped_shell(
                 buf_out.append_line(line)
 
         maybe_run_insights()
+        # Keep raw PTY bytes unchanged on Unix to avoid prompt/display issues.
+        # Remote inline rewriting currently runs in the Windows pipe wrapper.
         return data
 
     def stdin_read(fd: int) -> bytes:
@@ -417,6 +669,22 @@ def run_wrapped_shell(
                     _print_tc_message("No remaining commands in batch.")
                 return b""
 
+            sess = parse_session_invocation(line)
+            if sess.recognized:
+                if sess.parse_error:
+                    _print_tc_message(f"Invalid tc session syntax: {sess.parse_error}")
+                    return b""
+                if sess.action == "start":
+                    _start_session_recording(sess.path)
+                elif sess.action == "stop":
+                    _stop_session_recording()
+                elif sess.action == "path":
+                    if recorder and recorder.file_path:
+                        _print_tc_message(f"Session log path: {recorder.file_path}")
+                    else:
+                        _print_tc_message("Session logging is not active.")
+                return b""
+
             invocation = parse_batch_invocation(line)
             if not invocation.recognized:
                 return None
@@ -472,11 +740,29 @@ def run_wrapped_shell(
                     del passthrough[current_line_start:]
                     injected.extend(b"\x15")
                     injected.extend(action)
+                    if recorder:
+                        try:
+                            injected_text = action.decode("utf-8", errors="replace")
+                        except Exception:
+                            injected_text = ""
+                        for cmd in injected_text.splitlines():
+                            if cmd.strip():
+                                recorder.record_input(cmd.strip(), source="injected")
+                    try:
+                        injected_text = action.decode("utf-8", errors="replace")
+                    except Exception:
+                        injected_text = ""
+                    for cmd in injected_text.splitlines():
+                        if cmd.strip():
+                            pipeline.on_input_line(cmd.strip())
                     current_line_start = len(passthrough)
                 else:
                     line = submitted.strip()
                     if line and not line.isspace():
                         buf_in.append(line)
+                        if recorder:
+                            recorder.record_input(line, source="tty")
+                        pipeline.on_input_line(line)
                     current_line_start = len(passthrough)
                 continue
 
@@ -496,14 +782,18 @@ def run_wrapped_shell(
     orig_help = os.environ.get("TC_HELP_MENU")
     orig_home = os.environ.get("TC_HOME")
     orig_ps_wrapped = os.environ.get("TC_PS_WRAPPED")
+    orig_net_wrapped = os.environ.get("TC_NET_WRAPPED")
     orig_py = os.environ.get("TC_PYTHON_BIN")
+    orig_host_os = os.environ.get("TC_HOST_OS")
     orig_columns = os.environ.get("COLUMNS")
     orig_lines = os.environ.get("LINES")
     os.environ["TC_CONTEXT"] = "1"
     os.environ["TC_HELP_MENU"] = render_help_menu()
     os.environ["TC_HOME"] = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     os.environ["TC_PS_WRAPPED"] = "1"
+    os.environ["TC_NET_WRAPPED"] = "1"
     os.environ["TC_PYTHON_BIN"] = sys.executable or "python3"
+    os.environ["TC_HOST_OS"] = _host_os_name()
     try:
         term_size = os.get_terminal_size(sys.stdin.fileno())
         os.environ["COLUMNS"] = str(term_size.columns)
@@ -512,14 +802,19 @@ def run_wrapped_shell(
         pass
 
     # Optional one-time header so it's obvious when you enter the wrapped shell.
-    _print_tc_message("Dropping into terminal-copilot shell...")
+    _print_tc_message(
+        f"Dropping into terminal-copilot shell ({_host_os_name()} via {os.path.basename(shell)})..."
+    )
 
     # Use pty.spawn to handle PTY setup, line discipline, and job control.
     argv = [shell, "-i"]
     try:
-        status = pty.spawn(argv, master_read=master_read, stdin_read=stdin_read)
+        spawn = getattr(pty, "spawn")
+        status = spawn(argv, master_read=master_read, stdin_read=stdin_read)
     except OSError as e:
         print(f"terminal-copilot: pty.spawn failed: {e}", file=sys.stderr)
+        if recorder:
+            recorder.close(exit_code=127)
         return 127
     finally:
         # Restore TC_CONTEXT in the parent environment.
@@ -539,10 +834,18 @@ def run_wrapped_shell(
             os.environ.pop("TC_PS_WRAPPED", None)
         else:
             os.environ["TC_PS_WRAPPED"] = orig_ps_wrapped
+        if orig_net_wrapped is None:
+            os.environ.pop("TC_NET_WRAPPED", None)
+        else:
+            os.environ["TC_NET_WRAPPED"] = orig_net_wrapped
         if orig_py is None:
             os.environ.pop("TC_PYTHON_BIN", None)
         else:
             os.environ["TC_PYTHON_BIN"] = orig_py
+        if orig_host_os is None:
+            os.environ.pop("TC_HOST_OS", None)
+        else:
+            os.environ["TC_HOST_OS"] = orig_host_os
         if orig_columns is None:
             os.environ.pop("COLUMNS", None)
         else:
@@ -553,7 +856,11 @@ def run_wrapped_shell(
             os.environ["LINES"] = orig_lines
 
     # pty.spawn returns wait status from os.waitpid; convert to exit code.
+    exit_code = 0
     try:
-        return os.waitstatus_to_exitcode(status)
+        exit_code = os.waitstatus_to_exitcode(status)
     except Exception:
-        return 0
+        exit_code = 0
+    if recorder:
+        recorder.close(exit_code=exit_code)
+    return exit_code
