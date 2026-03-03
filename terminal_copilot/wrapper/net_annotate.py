@@ -72,6 +72,14 @@ def _extract_pid(line: str) -> int | None:
             return int(m.group(1))
         except ValueError:
             return None
+
+    # PowerShell Get-Net* outputs often end with OwningProcess integer.
+    m = re.search(r"\s(\d{1,10})\s*$", line)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
     return None
 
 
@@ -103,6 +111,12 @@ def _is_data_row(line: str) -> bool:
     if stripped.startswith("Active "):
         return False
     if stripped.startswith("State "):
+        return False
+    if "OwningProcess" in stripped and "LocalAddress" in stripped:
+        return False
+    if stripped.startswith("LocalAddress "):
+        return False
+    if stripped.startswith("LocalPort "):
         return False
     return True
 

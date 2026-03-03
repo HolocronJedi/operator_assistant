@@ -133,7 +133,7 @@ def _detect_windows_parent_shell() -> str:
 
 
 def _windows_shell_argv(shell: str) -> list[str]:
-    """Build shell argv with minimal tc context initialization."""
+    """Build shell argv with tc context + process-list wrappers."""
     name = os.path.basename(shell).lower()
     if "powershell" in name or name in ("pwsh.exe", "pwsh"):
         script = (
@@ -142,13 +142,23 @@ def _windows_shell_argv(shell: str) -> list[str]:
             'param([Parameter(ValueFromRemainingArguments=$true)][string[]]$tcArgs); '
             'if ($tcArgs.Count -eq 0) { if ($env:TC_HELP_MENU) { $env:TC_HELP_MENU -split "`n" | ForEach-Object { $_ } }; return }; '
             'Microsoft.PowerShell.Core\\Get-Help @tcArgs '
-            '}'
+            '}; '
+            '$tcPy = if ($env:TC_PYTHON_BIN) { $env:TC_PYTHON_BIN } else { "python" }; '
+            'function global:tasklist { & tasklist.exe @args | & $tcPy -m terminal_copilot.wrapper.tasklist_pipe --source tasklist }; '
+            'function global:Get-Process { Microsoft.PowerShell.Management\\Get-Process @args | Out-String -Width 4096 | & $tcPy -m terminal_copilot.wrapper.tasklist_pipe --source get-process }; '
+            'function global:wmic { if ($args.Count -gt 0 -and $args[0].ToString().ToLower() -eq "process") { & wmic.exe @args | & $tcPy -m terminal_copilot.wrapper.tasklist_pipe --source wmic } else { & wmic.exe @args } }; '
+            'function global:netstat { & netstat.exe @args | & $tcPy -m terminal_copilot.wrapper.net_pipe --source netstat }; '
+            'function global:Get-NetTCPConnection { NetTCPIP\\Get-NetTCPConnection @args | Out-String -Width 4096 | & $tcPy -m terminal_copilot.wrapper.net_pipe --source get-nettcpconnection }; '
+            'function global:Get-NetUDPEndpoint { NetTCPIP\\Get-NetUDPEndpoint @args | Out-String -Width 4096 | & $tcPy -m terminal_copilot.wrapper.net_pipe --source get-netudpendpoint }'
         )
         return [shell, "-NoLogo", "-NoExit", "-Command", script]
     if name in ("cmd.exe", "cmd"):
         cmd_init = (
             "prompt [tc] $P$G"
             " & doskey help=python -m terminal_copilot.wrapper.print_help_menu"
+            " & doskey tasklist=tasklist.exe $* ^| python -m terminal_copilot.wrapper.tasklist_pipe --source tasklist"
+            " & doskey wmic=wmic.exe $* ^| python -m terminal_copilot.wrapper.tasklist_pipe --source wmic"
+            " & doskey netstat=netstat.exe $* ^| python -m terminal_copilot.wrapper.net_pipe --source netstat"
         )
         return [shell, "/Q", "/K", cmd_init]
     return [shell]
@@ -392,6 +402,7 @@ def _run_wrapped_shell_windows(
         "TC_HELP_MENU": os.environ.get("TC_HELP_MENU"),
         "TC_HOME": os.environ.get("TC_HOME"),
         "TC_PS_WRAPPED": os.environ.get("TC_PS_WRAPPED"),
+        "TC_TASKLIST_WRAPPED": os.environ.get("TC_TASKLIST_WRAPPED"),
         "TC_NET_WRAPPED": os.environ.get("TC_NET_WRAPPED"),
         "TC_PYTHON_BIN": os.environ.get("TC_PYTHON_BIN"),
         "TC_HOST_OS": os.environ.get("TC_HOST_OS"),
@@ -400,7 +411,8 @@ def _run_wrapped_shell_windows(
     os.environ["TC_HELP_MENU"] = render_help_menu()
     os.environ["TC_HOME"] = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     os.environ["TC_PS_WRAPPED"] = "0"
-    os.environ["TC_NET_WRAPPED"] = "0"
+    os.environ["TC_TASKLIST_WRAPPED"] = "1"
+    os.environ["TC_NET_WRAPPED"] = "1"
     os.environ["TC_PYTHON_BIN"] = sys.executable or "python"
     os.environ["TC_HOST_OS"] = _host_os_name()
 

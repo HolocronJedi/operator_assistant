@@ -54,6 +54,18 @@
     "rundll32.exe", "regsvr32.exe", "mshta.exe", "wmic.exe", "certutil.exe",
     "bitsadmin.exe", "installutil.exe", "schtasks.exe"
   ],
+  "windows_safe_row_patterns": [
+    "\\b(system|registry|memory compression|idle)\\b",
+    "\\b(csrss|wininit|winlogon|lsass|services|svchost|explorer|dwm)\\.exe\\b"
+  ],
+  "windows_suspicious_row_patterns": [
+    "\\b(powershell|pwsh|cmd|wscript|cscript|regsvr32|rundll32|mshta|certutil|bitsadmin|wmic)\\.exe\\b",
+    "\\b(appdata|temp|downloads|public)\\b"
+  ],
+  "windows_malicious_row_patterns": [
+    "\\b(frombase64string|invoke-expression|downloadstring|http[s]?://)\\b",
+    "\\b(nc\\s|netcat|mimikatz|meterpreter)\\b"
+  ],
   "suspicious_cmdline_patterns": [
     "-enc",
     "frombase64string",

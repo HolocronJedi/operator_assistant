@@ -8,9 +8,11 @@ Supports:
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import re
+import sys
 from pathlib import Path
 from typing import Iterable, NamedTuple
 
@@ -33,6 +35,14 @@ FLAG = {
 
 RESET = "\033[0m"
 PREFIX_WIDTH = max(len(v) for v in FLAG.values())
+
+_SEVERITY = {
+    "unknown": 0,
+    "safe": 1,
+    "installed_app": 2,
+    "potentially_malicious": 3,
+    "malicious": 4,
+}
 
 
 class WinProcRow(NamedTuple):
@@ -85,14 +95,41 @@ def _categorize_name(name: str, rules: dict) -> str:
 
 def _categorize_row(name: str, raw_line: str, rules: dict) -> str:
     """
-    Score-based fallback around name classification. Defaults to unknown.
+    Score-accumulation classification for a process row.
     """
     base = _categorize_name(name, rules)
-    if base != "unknown":
-        return base
-
     text = f"{name} {raw_line}".lower()
     score = 0
+
+    if base == "safe":
+        score -= 30
+    elif base == "potentially_malicious":
+        score += 20
+
+    for pat in rules.get("windows_safe_row_patterns", []):
+        try:
+            if re.search(str(pat), text, re.I):
+                score -= 20
+        except re.error:
+            if str(pat).lower() in text:
+                score -= 20
+
+    for pat in rules.get("windows_suspicious_row_patterns", []):
+        try:
+            if re.search(str(pat), text, re.I):
+                score += 20
+        except re.error:
+            if str(pat).lower() in text:
+                score += 20
+
+    for pat in rules.get("windows_malicious_row_patterns", []):
+        try:
+            if re.search(str(pat), text, re.I):
+                score += 100
+        except re.error:
+            if str(pat).lower() in text:
+                score += 100
+
     for pat in rules.get("suspicious_cmdline_patterns", []):
         try:
             if re.search(str(pat), text, re.I):
@@ -112,6 +149,11 @@ def _categorize_row(name: str, raw_line: str, rules: dict) -> str:
         return "malicious"
     if score >= 20:
         return "potentially_malicious"
+    if score <= -20:
+        return "safe"
+
+    if base in _SEVERITY:
+        return base
     return "unknown"
 
 
@@ -304,6 +346,12 @@ def _iter_windows_rows(raw: str) -> Iterable[WinProcRow]:
             or _extract_name_from_get_process_row(stripped)
             or _extract_name_from_wmic_row(stripped)
         )
+        if not name:
+            # Generic fallback for table-ish outputs from other tools:
+            # first token looks like process name + some numeric token (pid).
+            m_generic = re.match(r'^"?([A-Za-z_][A-Za-z0-9_.-]*)"?\s+.*\b(\d{1,8})\b', stripped)
+            if m_generic:
+                name = m_generic.group(1)
         if name:
             pid_match = re.search(r"\b(\d+)\b", stripped)
             pid = int(pid_match.group(1)) if pid_match else None
@@ -340,3 +388,23 @@ def annotate_windows_process_output(raw: str) -> tuple[str, str]:
 def annotate_tasklist_output(raw: str) -> tuple[str, str]:
     # Backward-compatible alias.
     return annotate_windows_process_output(raw)
+
+
+def annotate_tasklist_text(raw: str) -> str:
+    body, _ = annotate_windows_process_output(raw)
+    if not body:
+        return ""
+    return body.rstrip() + "\n"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--source", default="", help="source command label")
+    parser.parse_args()
+    raw = sys.stdin.read()
+    sys.stdout.write(annotate_tasklist_text(raw))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

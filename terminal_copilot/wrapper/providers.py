@@ -396,6 +396,9 @@ def rule_based_insights(ctx: TerminalContext) -> list[Insight]:
     is_net_cmd = "netstat" in tokens or "ss" in tokens
 
     if is_windows_proc_cmd:
+        if os.environ.get("TC_TASKLIST_WRAPPED") == "1":
+            # tasklist/Get-Process/wmic output already rewritten inline.
+            return insights
         global _last_windows_proc_input_len
         if len(ctx.input_lines) == _last_windows_proc_input_len:
             return insights
